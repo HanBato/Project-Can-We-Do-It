@@ -283,26 +283,6 @@
         .xp-btn-green:active {
             background: linear-gradient(180deg, #00CC00, #33FF33);
         }
-
-        /* Smart Dark Mode for Page ONLY */
-        html.jko-smart-dark {
-            filter: invert(1) hue-rotate(180deg);
-            background-color: #111 !important;
-        }
-        html.jko-smart-dark body {
-            background-color: #111 !important;
-        }
-        html.jko-smart-dark img,
-        html.jko-smart-dark video,
-        html.jko-smart-dark iframe,
-        html.jko-smart-dark embed,
-        html.jko-smart-dark object {
-            filter: invert(1) hue-rotate(180deg);
-        }
-        /* Ensure UI is NOT inverted */
-        #jko-bug-tester-ui {
-            filter: none !important;
-        }
     `;
     document.head.appendChild(xpStyles);
 
@@ -440,12 +420,23 @@
 
     // --- Helper Functions ---
     function applyTheme() {
-        // Only affects the HTML element for the site, UI remains unchanged
-        if (isDarkMode) {
-            document.documentElement.classList.add('jko-smart-dark');
-        } else {
-            document.documentElement.classList.remove('jko-smart-dark');
-        }
+        // Logic from provided Apple-style script
+        const filterStr = isDarkMode ? "invert(1) hue-rotate(180deg)" : "none";
+        
+        // Apply to main document
+        document.documentElement.style.filter = filterStr;
+        
+        // Apply to iframes (JKO specific)
+        document.querySelectorAll('iframe').forEach(f => {
+            try { 
+                if(f.contentDocument && f.contentDocument.documentElement) {
+                    f.contentDocument.documentElement.style.filter = filterStr; 
+                }
+            } catch(e) {}
+        });
+        
+        // We specifically DO NOT apply the filter to the UI container (#jko-bug-tester-ui)
+        // to keep the UI looking like Windows XP as requested.
     }
 
     function toggleTurbo() {
