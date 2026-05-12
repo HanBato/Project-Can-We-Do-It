@@ -1,0 +1,856 @@
+(function() {
+    // --- Configuration & State ---
+    let cycleTime = 3;  
+    let delayTime = 4; 
+    let totalCycles = 18; 
+    let currentCycle = 0;
+    let timeLeftMs = 0;
+    let isRunning = false;
+    let timerInterval = null;
+    let nextCycleTimeout = null;
+    let isDarkMode = false; 
+    let isTurboMode = false; 
+    let failCount = 0; 
+    let turboStartTime = 0; 
+    let audioCtx = null; 
+    let originalTitle = document.title;
+    let titleBlinkInterval = null;
+    let uiStartTime = Date.now(); 
+    let isStatusFlipped = false; 
+    let currentLocationIndex = 0; 
+    
+    const TURBO_SPEED = 800; 
+    const LOCATIONS = [
+        { bottom: '20px', left: '50%', transform: 'translateX(-50%)' },
+        { top: '20px', left: '20px', transform: 'none' },
+        { top: '20px', right: '20px', left: 'auto', transform: 'none' },
+        { bottom: '20px', right: '20px', left: 'auto', transform: 'none' },
+        { bottom: '20px', left: '20px', transform: 'none' }
+    ];
+
+    // --- Helper: Sound Effects ---
+    function playSound(type = 'success') {
+        try {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            if (type === 'success' || type === 'beep') {
+                const playTone = (freq, startTime, duration) => {
+                    const osc = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    osc.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    gainNode.gain.setValueAtTime(0.3, startTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+                    osc.start(startTime);
+                    osc.stop(startTime + duration);
+                };
+
+                const now = audioCtx.currentTime;
+                playTone(220, now, 0.15);
+                playTone(330, now + 0.2, 0.4);
+                
+            } else if (type === 'error') {
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                osc.frequency.value = 150; 
+                osc.type = 'sawtooth';
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+            }
+        } catch(e) { console.log("Audio blocked"); }
+    }
+
+    // --- Helper: Title Blink ---
+    function startTitleBlink() {
+        if (titleBlinkInterval) return;
+        titleBlinkInterval = setInterval(() => {
+            document.title = document.title === originalTitle ? "✅ DONE" : originalTitle;
+        }, 800);
+    }
+
+    function stopTitleBlink() {
+        clearInterval(titleBlinkInterval);
+        titleBlinkInterval = null;
+        document.title = originalTitle;
+    }
+
+    // --- UI Creation ---
+    const container = document.createElement('div');
+    container.id = 'jko-bug-tester-ui';
+    
+    // CSS
+    Object.assign(container.style, {
+        position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
+        backgroundColor: '#EBE8D8', 
+        border: '1px solid #0054E3', 
+        borderRadius: '8px', 
+        boxShadow: '2px 2px 10px rgba(0,0,0,0.5)', 
+        zIndex: '2147483647', 
+        fontFamily: 'Tahoma, sans-serif',
+        display: 'flex', flexDirection: 'column', 
+        width: '380px', transition: 'opacity 0.2s, background 0.3s, color 0.3s, border-color 0.3s', opacity: '0.9',
+        color: '#000', 
+        overflow: 'hidden'
+    });
+
+    container.onmouseenter = () => { container.style.opacity = '1'; };
+    container.onmouseleave = () => { if(!isRunning) container.style.opacity = container.style.opacity; };
+
+    container.innerHTML = `
+        <!-- Title Bar -->
+        <div id="xp-title-bar" style="background: linear-gradient(180deg, #0997FF, #0054E3 15%, #0054E3 90%, #003C74); padding: 4px 6px; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; color: white; font-weight: bold; font-size: 13px;">
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <span style="font-size: 16px;">📎</span>
+                <span>Clippy. B</span>
+            </div>
+            <div style="display: flex; gap: 2px; align-items: center;">
+                <button id="btn-minimize" style="width: 21px; height: 21px; background: linear-gradient(180deg, #3C8BE0, #0054E3); border: 1px solid #003C74; border-radius: 3px; color: white; font-weight: bold; font-size: 14px; cursor: pointer; padding: 0; line-height: 18px;">_</button>
+                <button id="btn-maximize" style="width: 21px; height: 21px; background: linear-gradient(180deg, #3C8BE0, #0054E3); border: 1px solid #003C74; border-radius: 3px; color: white; font-weight: bold; font-size: 12px; cursor: pointer; padding: 0; line-height: 18px;">□</button>
+                <button id="btn-close" style="width: 21px; height: 21px; background: linear-gradient(180deg, #E28B8B, #C62F1E); border: 1px solid #8C2A1A; border-radius: 3px; color: white; font-weight: bold; font-size: 14px; cursor: pointer; padding: 0; line-height: 18px;">×</button>
+            </div>
+        </div>
+
+        <!-- Menu Bar -->
+        <div id="menu-bar" style="background: #EBE8D8; border-bottom: 1px solid #ACA899; padding: 2px 4px; font-size: 11px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; gap: 10px;">
+                <span style="cursor: pointer;" id="menu-settings"><u>S</u>ettings</span>
+                <span style="cursor: pointer;" id="menu-help"><u>H</u>elp</span>
+                <span style="cursor: pointer; display: none;" id="menu-weather">☀️ 72°F</span>
+            </div>
+            <div id="menu-date" style="font-weight: 600; color: #0054E3;">01/JAN/00</div>
+            <div id="menu-clock" style="font-weight: 600; color: #008000;">00:00:00[Z:00]</div>
+        </div>
+
+        <!-- Main Content -->
+        <div id="ui-main-content" style="padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+            
+            <!-- Group Box: Settings -->
+            <fieldset id="settings-box" style="border: 1px solid #ACA899; padding: 8px; border-radius: 4px; box-shadow: inset 1px 1px 0 #fff;">
+                <legend style="font-size: 11px; color: #0054E3; font-weight: bold;">Configuration</legend>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 5px; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 2px;">
+                        <label style="font-size: 10px;">SEC:</label>
+                        <input type="number" id="input-sec" value="${cycleTime}" min="1" max="99" style="width: 35px; border: 1px solid #7F9DB9; padding: 2px; font-family: Tahoma; font-size: 11px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 2px;">
+                        <label style="font-size: 10px;">DLY:</label>
+                        <input type="number" id="input-delay" value="${delayTime}" min="1" max="99" style="width: 35px; border: 1px solid #7F9DB9; padding: 2px; font-family: Tahoma; font-size: 11px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 2px;">
+                        <label style="font-size: 10px;">CYC:</label>
+                        <input type="number" id="input-cycles" value="${totalCycles}" min="1" max="99" style="width: 35px; border: 1px solid #7F9DB9; padding: 2px; font-family: Tahoma; font-size: 11px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px; justify-content: flex-end;">
+                        <label style="font-size: 10px;">AI:</label>
+                        <input type="checkbox" id="input-turbo" style="cursor: pointer;">
+                    </div>
+                </div>
+            </fieldset>
+
+            <!-- Group Box: Status & Age -->
+            <fieldset id="display-box" style="border: 1px solid #ACA899; padding: 8px; border-radius: 4px; box-shadow: inset 1px 1px 0 #fff; cursor: pointer;">
+                <legend style="font-size: 11px; color: #0054E3; font-weight: bold;">Status & Age</legend>
+                <div id="status-flip-container" style="position: relative; min-height: 60px;">
+                    <!-- Front: Status & ETA -->
+                    <div id="status-front" style="width: 100%;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span style="font-size: 12px;">Status: <b id="text-status">Ready</b></span>
+                            <span style="font-size: 12px;">ETA: <b id="text-eta-front">00/00:00:00</b></span>
+                        </div>
+                        <div style="height: 16px; background: #fff; border: 1px inset #808080; border-radius: 0; overflow: hidden;">
+                            <div id="progress-bar" style="width: 0%; height: 100%; background: linear-gradient(180deg, #33FF33, #00CC00); transition: width 0.3s;"></div>
+                        </div>
+                        <div id="cycle-counter" style="text-align: center; margin-top: 4px; font-size: 11px; font-weight: bold;">0/${totalCycles}</div>
+                    </div>
+
+                    <!-- Back: Status & Age -->
+                    <div id="status-back" style="display: none; width: 100%;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span style="font-size: 12px;">Status: <b id="text-status-back">Ready</b></span>
+                            <span style="font-size: 12px;">Age: <b id="text-age">00d 00h 00m 00s</b></span>
+                        </div>
+                        <div style="height: 16px; background: #fff; border: 1px inset #808080; border-radius: 0; overflow: hidden;">
+                             <div id="progress-bar-back" style="width: 0%; height: 100%; background: linear-gradient(180deg, #33FF33, #00CC00); transition: width 0.3s;"></div>
+                        </div>
+                        <div id="cycle-counter-back" style="text-align: center; margin-top: 4px; font-size: 11px; font-weight: bold;">0/${totalCycles}</div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <!-- Controls -->
+            <div style="display: flex; gap: 5px; justify-content: center;">
+                <button id="btn-force" class="xp-btn" style="flex: 1;">Test Jump</button>
+                <button id="btn-play-pause" class="xp-btn-green" style="flex: 3;">Start</button>
+                <button id="btn-reset" class="xp-btn" style="flex: 1;">Reset</button>
+            </div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div id="ui-settings-content" style="display: none; padding: 10px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <div>
+                    <label style="font-size: 11px; font-weight: bold;">Opacity:</label>
+                    <input type="range" id="slider-opacity" min="0.3" max="1" step="0.1" value="0.9" style="width: 100%;">
+                </div>
+                <div>
+                    <label style="font-size: 11px; font-weight: bold;">UI Color:</label>
+                    <input type="color" id="input-border-color" value="#0054E3" style="width: 100%; height: 24px; padding: 0; border: 1px solid #888;">
+                </div>
+            </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #ccc; padding-bottom: 5px;">
+                <span style="font-size: 11px; font-weight: bold;">Dark Mode (Site)</span>
+                <button id="btn-toggle-dark" class="xp-btn" style="font-size: 10px; padding: 2px 5px;">Toggle</button>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #ccc; padding-bottom: 5px;">
+                <span style="font-size: 11px; font-weight: bold;">Weather</span>
+                <input type="checkbox" id="check-weather">
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span style="font-size: 11px; font-weight: bold;">Save Settings</span>
+                <button id="btn-save-floppy" class="xp-btn" style="font-size: 16px;">💾</button>
+            </div>
+
+            <div style="display: flex; gap: 5px; margin-top: 10px;">
+                <button id="btn-audio-test" class="xp-btn" style="flex: 1;">Test Audio</button>
+                <button id="btn-defaults" class="xp-btn" style="flex: 1;">Reset Defaults</button>
+            </div>
+        </div>
+
+        <!-- Legend Content -->
+        <div id="ui-legend-content" style="display: none; padding: 15px; text-align: center;">
+            <div style="font-size: 16px; font-weight: bold; margin-bottom: 10px; color: #0054E3;">Keyboard Shortcuts</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; text-align: left; font-size: 11px;">
+                <div><b>[S]</b> Start / Stop</div>
+                <div><b>[R]</b> Reset Counter</div>
+                <div><b>[T]</b> AI Mode</div>
+                <div><b>[F]</b> Test Jump</div>
+                <div><b>[M]</b> Minimize UI</div>
+                <div><b>[D]</b> Dark Mode</div>
+                <div><b>[H]</b> Help / Legend</div>
+                <div><b>[C]</b> Change Location</div>
+            </div>
+            <br>
+            <button id="btn-close-legend" class="xp-btn" style="width: 100px;">Close</button>
+        </div>
+    `;
+    document.body.appendChild(container);
+
+    // --- XP Button Styles (Injected CSS) ---
+    const xpStyles = document.createElement('style');
+    xpStyles.innerHTML = `
+        .xp-btn {
+            background: linear-gradient(180deg, #FFFFFF, #ECE9D8);
+            border: 1px solid #003C74;
+            border-radius: 3px;
+            padding: 5px 10px;
+            font-family: Tahoma, sans-serif;
+            font-size: 11px;
+            cursor: pointer;
+            color: #000;
+            text-shadow: 1px 1px #fff;
+        }
+        .xp-btn:hover {
+            background: linear-gradient(180deg, #FFFFFF, #DBD8C8);
+        }
+        .xp-btn:active {
+            background: linear-gradient(180deg, #DBD8C8, #FFFFFF);
+            border: 1px inset #003C74;
+        }
+        
+        .xp-btn-green {
+            background: linear-gradient(180deg, #33FF33, #00CC00);
+            border: 1px solid #003C74;
+            border-radius: 3px;
+            padding: 5px 10px;
+            font-family: Tahoma, sans-serif;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            color: #000;
+            text-shadow: 1px 1px #fff;
+        }
+        .xp-btn-green:hover {
+            background: linear-gradient(180deg, #44FF44, #11DD11);
+        }
+        .xp-btn-green:active {
+            background: linear-gradient(180deg, #00CC00, #33FF33);
+        }
+
+        /* Smart Dark Mode for Page ONLY */
+        html.jko-smart-dark {
+            filter: invert(1) hue-rotate(180deg);
+            background-color: #111 !important;
+        }
+        html.jko-smart-dark body {
+            background-color: #111 !important;
+        }
+        html.jko-smart-dark img,
+        html.jko-smart-dark video,
+        html.jko-smart-dark iframe,
+        html.jko-smart-dark embed,
+        html.jko-smart-dark object {
+            filter: invert(1) hue-rotate(180deg);
+        }
+        /* Ensure UI is NOT inverted */
+        #jko-bug-tester-ui {
+            filter: none !important;
+        }
+    `;
+    document.head.appendChild(xpStyles);
+
+    // Element References
+    const etaDisplay = container.querySelector('#eta-display');
+    const textEtaFront = container.querySelector('#text-eta-front');
+    const cycleCounter = container.querySelector('#cycle-counter');
+    const cycleCounterBack = container.querySelector('#cycle-counter-back');
+    const progressBarBack = container.querySelector('#progress-bar-back');
+    const mainContent = container.querySelector('#ui-main-content');
+    const settingsContent = container.querySelector('#ui-settings-content');
+    const legendContent = container.querySelector('#ui-legend-content');
+    const playPauseBtn = container.querySelector('#btn-play-pause');
+    const inputSec = container.querySelector('#input-sec');
+    const inputDelay = container.querySelector('#input-delay');
+    const inputCycles = container.querySelector('#input-cycles');
+    const inputTurbo = container.querySelector('#input-turbo');
+    const progressBar = container.querySelector('#progress-bar');
+    const textAge = container.querySelector('#text-age');
+    const textStatus = container.querySelector('#text-status');
+    const textStatusBack = container.querySelector('#text-status-back');
+    const statusFront = container.querySelector('#status-front');
+    const statusBack = container.querySelector('#status-back');
+    const displayBox = container.querySelector('#display-box');
+    
+    const titleBar = container.querySelector('#xp-title-bar');
+    const menuDate = container.querySelector('#menu-date');
+    const menuClock = container.querySelector('#menu-clock');
+    const menuWeather = container.querySelector('#menu-weather');
+    const checkWeather = container.querySelector('#check-weather');
+    const sliderOpacity = container.querySelector('#slider-opacity');
+    const inputBorderColor = container.querySelector('#input-border-color');
+    const btnSaveFloppy = container.querySelector('#btn-save-floppy');
+
+    // --- Draggable Logic ---
+    let isDragging = false;
+    let dragStartX, dragStartY, initialLeft, initialTop;
+
+    function startDrag(e) {
+        if (e.target.closest('button') || e.target.closest('input')) return;
+        isDragging = true;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        
+        const rect = container.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+
+        container.style.bottom = 'auto';
+        container.style.top = initialTop + 'px';
+        container.style.left = initialLeft + 'px';
+        container.style.transform = 'none';
+        
+        document.addEventListener('mousemove', drag);
+        document.addEventListener('mouseup', stopDrag);
+    }
+
+    function drag(e) {
+        if (!isDragging) return;
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+        
+        let newLeft = initialLeft + dx;
+        let newTop = initialTop + dy;
+
+        const rect = container.getBoundingClientRect();
+        const maxX = window.innerWidth - rect.width;
+        const maxY = window.innerHeight - rect.height;
+
+        newLeft = Math.max(0, Math.min(newLeft, maxX));
+        newTop = Math.max(0, Math.min(newTop, maxY));
+
+        container.style.left = newLeft + 'px';
+        container.style.top = newTop + 'px';
+    }
+
+    function stopDrag() {
+        isDragging = false;
+        document.removeEventListener('mousemove', drag);
+        document.removeEventListener('mouseup', stopDrag);
+    }
+
+    titleBar.addEventListener('mousedown', startDrag);
+
+    // --- Time & Age Logic ---
+    function updateTimes() {
+        const now = new Date();
+        const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+        
+        // Date (Center)
+        const dayStr = String(now.getDate()).padStart(2, '0');
+        const monthStr = months[now.getMonth()];
+        const yearStr = String(now.getFullYear()).slice(-2);
+        menuDate.innerText = `${dayStr}/${monthStr}/${yearStr}`;
+
+        // Time (Right) - Format: HH:MM:SS[Z:HH]
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        const zH = String(now.getUTCHours()).padStart(2, '0');
+        menuClock.innerText = `${h}:${m}:${s}[Z:${zH}]`;
+
+        // Age
+        const diff = Date.now() - uiStartTime;
+        const d = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hrs = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const secs = Math.floor((diff % (1000 * 60)) / 1000);
+        textAge.innerText = `${String(d).padStart(2, '0')}d ${String(hrs).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+    }
+
+    setInterval(updateTimes, 1000);
+    updateTimes(); 
+
+    // --- Weather Logic ---
+    async function fetchWeather() {
+        try {
+            const response = await fetch('https://wttr.in/?format=j1');
+            const data = await response.json();
+            const condition = data.current_condition[0];
+            const temp = condition.temp_F;
+            const desc = condition.weatherDesc[0].value.toLowerCase();
+            
+            let icon = '☀️';
+            if (desc.includes('rain') || desc.includes('shower')) icon = '🌧️';
+            else if (desc.includes('cloud') || desc.includes('overcast')) icon = '☁️';
+            else if (desc.includes('partly')) icon = '🌤️';
+            else if (desc.includes('clear') && menuClock.innerText.startsWith('2')) icon = '🌕'; 
+
+            menuWeather.innerText = `${icon} ${temp}°F`;
+        } catch (e) {
+            menuWeather.innerText = '☀️ --°F';
+        }
+    }
+
+    // --- Helper Functions ---
+    function applyTheme() {
+        // Only affects the HTML element for the site, UI remains unchanged
+        if (isDarkMode) {
+            document.documentElement.classList.add('jko-smart-dark');
+        } else {
+            document.documentElement.classList.remove('jko-smart-dark');
+        }
+    }
+
+    function toggleTurbo() {
+        isTurboMode = !isTurboMode;
+        inputTurbo.checked = isTurboMode;
+        saveSettings();
+    }
+
+    function sanitizeInputs() {
+        let sec = parseInt(inputSec.value) || 1;
+        let del = parseInt(inputDelay.value) || 1;
+        let cyc = parseInt(inputCycles.value) || 1;
+        
+        if(sec < 1) sec = 1; if(sec > 99) sec = 99;
+        if(del < 1) del = 1; if(del > 99) del = 99;
+        if(cyc < 1) cyc = 1; if(cyc > 99) cyc = 99;
+
+        inputSec.value = sec; inputDelay.value = del; inputCycles.value = cyc;
+    }
+
+    // Enforce limits on input change
+    [inputSec, inputDelay, inputCycles].forEach(input => {
+        input.addEventListener('change', () => {
+            let val = parseInt(input.value);
+            if (isNaN(val) || val < 1) input.value = 1;
+            if (val > 99) input.value = 99;
+        });
+    });
+    
+    function loadSettings() {
+        if (localStorage.getItem('jko_save_enabled') === null) {
+            localStorage.setItem('jko_save_enabled', 'true');
+            btnSaveFloppy.style.border = '2px solid green';
+        }
+
+        const saveEnabled = localStorage.getItem('jko_save_enabled') === 'true';
+        if (!saveEnabled) {
+            btnSaveFloppy.style.border = '1px solid #003C74';
+            return;
+        }
+        
+        btnSaveFloppy.style.border = '2px solid green';
+        const saved = localStorage.getItem('jko_tester_config');
+        if (saved) {
+            try {
+                const config = JSON.parse(saved);
+                inputSec.value = config.sec || 3;
+                inputDelay.value = config.delay || 4;
+                inputCycles.value = config.cycles || 18;
+                isTurboMode = config.turbo || false;
+                inputTurbo.checked = isTurboMode;
+                
+                if(config.darkMode) {
+                    isDarkMode = true;
+                    applyTheme();
+                }
+                if(config.opacity) {
+                    container.style.opacity = config.opacity;
+                    sliderOpacity.value = config.opacity;
+                }
+                if(config.borderColor) {
+                    container.style.borderColor = config.borderColor;
+                    titleBar.style.background = config.borderColor; // Apply to header
+                    inputBorderColor.value = config.borderColor;
+                }
+                if(config.weatherEnabled) {
+                    checkWeather.checked = true;
+                    menuWeather.style.display = 'block';
+                    fetchWeather();
+                }
+
+            } catch(e) {}
+        }
+    }
+
+    function saveSettings() {
+        const saveEnabled = localStorage.getItem('jko_save_enabled') === 'true';
+        if (!saveEnabled) return;
+
+        const config = {
+            sec: inputSec.value,
+            delay: inputDelay.value,
+            cycles: inputCycles.value,
+            turbo: inputTurbo.checked,
+            darkMode: isDarkMode,
+            opacity: sliderOpacity.value,
+            borderColor: inputBorderColor.value,
+            weatherEnabled: checkWeather.checked
+        };
+        localStorage.setItem('jko_tester_config', JSON.stringify(config));
+    }
+
+    function updateETA() {
+        sanitizeInputs();
+        const liveSec = parseFloat(inputSec.value) || 0;
+        const liveDelay = parseInt(inputDelay.value) || 0;
+        const liveTotal = parseInt(inputCycles.value) || 0;
+        const remainingCycles = Math.max(0, liveTotal - currentCycle);
+        const delaysCount = Math.max(0, remainingCycles - 1);
+        
+        const progressPct = (currentCycle / liveTotal) * 100;
+        progressBar.style.width = progressPct + '%';
+        progressBarBack.style.width = progressPct + '%';
+
+        let msTotal = 0;
+        
+        if (isTurboMode) {
+             textEtaFront.innerText = "TURBO MODE";
+             textEtaFront.style.color = "#FF4500";
+        } else {
+            if (isRunning) {
+                msTotal = timeLeftMs + (remainingCycles * liveSec * 1000) + (delaysCount * liveDelay * 1000);
+            } else {
+                 msTotal = (liveTotal * liveSec * 1000) + (Math.max(0, liveTotal - 1) * liveDelay * 1000);
+            }
+
+            let ms = msTotal;
+            if (ms < 0) ms = 0;
+
+            const days = Math.floor(ms / (1000 * 60 * 60 * 24));
+            const hours = Math.floor((ms % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((ms % (1000 * 60)) / 1000);
+
+            textEtaFront.innerText = `${String(days).padStart(2, '0')}/${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            textEtaFront.style.color = "#000"; // Always black for UI
+        }
+
+        const countText = `${currentCycle}/${liveTotal}`;
+        cycleCounter.innerText = countText;
+        cycleCounterBack.innerText = countText;
+    }
+
+    function startCycle() {
+        sanitizeInputs();
+        const liveTotal = parseInt(inputCycles.value);
+        
+        if (isTurboMode && currentCycle === 0) turboStartTime = Date.now();
+
+        if (currentCycle >= liveTotal) {
+            stopTimer();
+            progressBar.style.width = '100%';
+            progressBarBack.style.width = '100%';
+            
+            if (isTurboMode && turboStartTime > 0) {
+                const duration = Date.now() - turboStartTime;
+                textEtaFront.innerText = `Done in ${(duration / 1000).toFixed(2)}s`;
+            } else {
+                textEtaFront.innerText = "Done";
+            }
+            
+            textStatus.innerText = "Finished ✅";
+            textStatusBack.innerText = "Finished ✅";
+            playSound('success');
+            startTitleBlink();
+            return;
+        }
+        
+        if (!isRunning) return;
+        
+        textStatus.innerText = "Running...";
+        textStatusBack.innerText = "Running...";
+        if (timeLeftMs <= 0) {
+            timeLeftMs = isTurboMode ? TURBO_SPEED : (parseFloat(inputSec.value) * 1000) + Math.floor(Math.random() * 500);
+        }
+        
+        timerInterval = setInterval(() => {
+            timeLeftMs -= 100;
+            updateETA();
+            if (timeLeftMs <= 0) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+                timeLeftMs = 0;
+                
+                try { API_1484_11.SetValue('cmi.completion_status', 'completed'); API_1484_11.Commit(""); } catch(e){}
+                currentCycle++;
+                
+                try {
+                    const h = document.getElementsByName("courseheader");
+                    const d = h[0].contentDocument || h[0].contentWindow.document;
+                    let b = d.getElementById('four');
+                    if (b) {
+                        failCount = 0; 
+                        if (b.href && b.href.includes('javascript:')) { h[0].contentWindow.location.href = b.href; } 
+                        else { b.click(); }
+                    } else {
+                        failCount++;
+                    }
+                } catch(e) {
+                    failCount++;
+                }
+                
+                if (failCount >= 3) {
+                    textStatus.innerText = "Error ❌";
+                    textStatusBack.innerText = "Error ❌";
+                    stopTimer();
+                    playSound('error');
+                    return;
+                }
+
+                const nextDelay = isTurboMode ? TURBO_SPEED : (parseInt(inputDelay.value) * 1000);
+                nextCycleTimeout = setTimeout(startCycle, nextDelay);
+            }
+        }, 100);
+    }
+
+    function stopTimer() { 
+        clearInterval(timerInterval); 
+        clearTimeout(nextCycleTimeout); 
+        isRunning = false; 
+        playPauseBtn.innerHTML = "Start";
+        playPauseBtn.className = "xp-btn-green";
+        textStatus.innerText = "Paused";
+        textStatusBack.innerText = "Paused";
+        updateETA();
+    }
+
+    function triggerPlayPause() {
+        if (!isRunning) {
+            isRunning = true;
+            failCount = 0; 
+            turboStartTime = 0; 
+            playPauseBtn.innerHTML = "Pause";
+            playPauseBtn.className = "xp-btn"; 
+            stopTitleBlink();
+            startCycle();
+        } else {
+            stopTimer();
+        }
+    }
+
+    // --- Event Listeners ---
+    playPauseBtn.addEventListener('click', triggerPlayPause);
+    inputTurbo.addEventListener('change', () => {
+        toggleTurbo();
+    });
+
+    container.querySelector('#btn-force').addEventListener('click', () => {
+        try {
+            API_1484_11.SetValue('cmi.completion_status','completed');
+            const h = document.getElementsByName("courseheader");
+            const d = h[0].contentDocument || h[0].contentWindow.document;
+            if (d.getElementById("c")) d.getElementById("c").submit();
+            textStatus.innerText = "Jumped ✅";
+            textStatusBack.innerText = "Jumped ✅";
+        } catch(e) { textStatus.innerText = "Force Error"; textStatusBack.innerText = "Force Error"; }
+    });
+
+    container.querySelector('#btn-reset').addEventListener('click', () => {
+        stopTimer();
+        currentCycle = 0;
+        timeLeftMs = 0;
+        failCount = 0;
+        progressBar.style.width = '0%';
+        progressBarBack.style.width = '0%';
+        stopTitleBlink();
+        textStatus.innerText = "Reset";
+        textStatusBack.innerText = "Reset";
+        updateETA();
+    });
+
+    // Window Controls
+    // Changed X to refresh tab
+    container.querySelector('#btn-close').addEventListener('click', () => {
+        location.reload();
+    });
+    
+    container.querySelector('#btn-minimize').addEventListener('click', () => {
+        mainContent.style.display = mainContent.style.display === 'none' ? 'block' : 'none';
+        settingsContent.style.display = 'none';
+        legendContent.style.display = 'none';
+    });
+    
+    container.querySelector('#btn-maximize').addEventListener('click', () => {
+        const isBig = container.style.width === '90%';
+        container.style.width = isBig ? '380px' : '90%';
+        container.style.left = isBig ? '50%' : '5%';
+        container.style.transform = isBig ? 'translateX(-50%)' : 'none';
+    });
+
+    // Menu Items
+    container.querySelector('#menu-settings').addEventListener('click', () => {
+        const isVisible = settingsContent.style.display === 'block';
+        mainContent.style.display = isVisible ? 'block' : 'none';
+        settingsContent.style.display = isVisible ? 'none' : 'block';
+        legendContent.style.display = 'none';
+    });
+    
+    container.querySelector('#menu-help').addEventListener('click', toggleLegend);
+    container.querySelector('#btn-close-legend').addEventListener('click', toggleLegend);
+
+    // Settings Panel Logic
+    sliderOpacity.addEventListener('input', (e) => {
+        container.style.opacity = e.target.value;
+        saveSettings();
+    });
+
+    inputBorderColor.addEventListener('input', (e) => {
+        const color = e.target.value;
+        container.style.borderColor = color;
+        titleBar.style.background = color; // Change header color
+        saveSettings();
+    });
+
+    container.querySelector('#btn-toggle-dark').addEventListener('click', () => {
+        isDarkMode = !isDarkMode;
+        applyTheme();
+        saveSettings();
+    });
+
+    checkWeather.addEventListener('change', (e) => {
+        menuWeather.style.display = e.target.checked ? 'block' : 'none';
+        if(e.target.checked) fetchWeather();
+        saveSettings();
+    });
+
+    btnSaveFloppy.addEventListener('click', () => {
+        const currentState = localStorage.getItem('jko_save_enabled') === 'true';
+        const newState = !currentState;
+        localStorage.setItem('jko_save_enabled', newState);
+        btnSaveFloppy.style.border = newState ? '2px solid green' : '1px solid #003C74';
+        
+        if (newState) {
+            saveSettings();
+        } else {
+            localStorage.removeItem('jko_tester_config');
+        }
+    });
+
+    container.querySelector('#btn-audio-test').addEventListener('click', () => {
+        playSound('beep');
+    });
+
+    container.querySelector('#btn-defaults').addEventListener('click', () => {
+        localStorage.removeItem('jko_tester_config');
+        location.reload();
+    });
+
+    // Status Box Flip
+    displayBox.addEventListener('click', (e) => {
+        if(e.target.tagName === 'INPUT') return;
+        
+        isStatusFlipped = !isStatusFlipped;
+        if (isStatusFlipped) {
+            statusFront.style.display = 'none';
+            statusBack.style.display = 'block';
+        } else {
+            statusFront.style.display = 'block';
+            statusBack.style.display = 'none';
+        }
+    });
+
+    function toggleLegend() {
+        const isVisible = legendContent.style.display === 'block';
+        mainContent.style.display = isVisible ? 'block' : 'none';
+        legendContent.style.display = isVisible ? 'none' : 'block';
+        settingsContent.style.display = 'none';
+    }
+
+    // Keyboard Shortcuts
+    document.addEventListener('keydown', (e) => {
+        if (document.activeElement.tagName === 'INPUT') return;
+        const key = e.key.toUpperCase();
+        switch(key) {
+            case 'S': triggerPlayPause(); break;
+            case 'R': container.querySelector('#btn-reset').click(); break;
+            case 'T': toggleTurbo(); break;
+            case 'F': container.querySelector('#btn-force').click(); break;
+            case 'M': container.querySelector('#btn-minimize').click(); break;
+            case 'D': 
+                isDarkMode = !isDarkMode; 
+                applyTheme(); 
+                saveSettings();
+                break;
+            case 'H': toggleLegend(); break;
+            case 'C': 
+                currentLocationIndex = (currentLocationIndex + 1) % LOCATIONS.length;
+                const loc = LOCATIONS[currentLocationIndex];
+                container.style.top = ''; container.style.bottom = '';
+                container.style.left = ''; container.style.right = '';
+                container.style.transform = '';
+                
+                Object.assign(container.style, loc);
+                break;
+        }
+    });
+
+    // Init
+    loadSettings();
+    updateETA();
+    
+    setTimeout(() => {
+        try {
+            const h = document.getElementsByName("courseheader");
+            const d = h[0].contentDocument || h[0].contentWindow.document;
+            const startBtn = d.getElementById('one');
+            const resumeBtn = d.getElementById('two');
+            if (startBtn) { startBtn.click(); textStatus.innerText = "Auto-Started"; textStatusBack.innerText = "Auto-Started"; } 
+            else if (resumeBtn) { resumeBtn.click(); textStatus.innerText = "Resumed"; textStatusBack.innerText = "Resumed"; }
+        } catch(e){}
+
+        setTimeout(() => {
+            textStatus.innerText = "Auto-Test...";
+            textStatusBack.innerText = "Auto-Test...";
+            container.querySelector('#btn-force').click();
+        }, 3000);
+    }, 1000);
+})();
