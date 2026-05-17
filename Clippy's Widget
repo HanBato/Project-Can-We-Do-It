@@ -7,6 +7,7 @@
         jkoDelay: 2,
         jkoCycles: 20,
         accent: '#00E676',
+        widgetBg: 'rgba(243, 243, 243, 0.85)', // New Widget BG Color
         scale: 1,
         ghostOpacity: 0.15,
         weatherUnit: 'F',
@@ -86,11 +87,11 @@
 
     // --- LOCATIONS ---
     const LOCATIONS = [
-        { bottom: '20px', left: '50%', transform: 'translateX(-50%) scale(var(--widget-scale))', top: 'auto', right: 'auto' }, // 0 Bottom Middle
-        { top: '20px', left: '20px', transform: 'none', bottom: 'auto', right: 'auto' }, // 1 Top Left
-        { top: '20px', right: '20px', left: 'auto', transform: 'none', bottom: 'auto' }, // 2 Top Right
-        { bottom: '20px', right: '20px', top: 'auto', left: 'auto', transform: 'none' }, // 3 Bottom Right
-        { bottom: '20px', left: '20px', transform: 'none', top: 'auto', right: 'auto' }  // 4 Bottom Left
+        { bottom: '20px', left: '50%', transform: 'translateX(-50%) scale(var(--widget-scale))', top: 'auto', right: 'auto' },
+        { top: '20px', left: '20px', transform: 'none', bottom: 'auto', right: 'auto' },
+        { top: '20px', right: '20px', left: 'auto', transform: 'none', bottom: 'auto' },
+        { bottom: '20px', right: '20px', top: 'auto', left: 'auto', transform: 'none' },
+        { bottom: '20px', left: '20px', transform: 'none', top: 'auto', right: 'auto' }
     ];
     let currentLocationIndex = 0;
 
@@ -98,7 +99,7 @@
     const css = `
         :root {
             --win-accent: ${state.config.accent};
-            --win-bg: rgba(243, 243, 243, 0.85);
+            --win-bg: ${state.config.widgetBg}; /* Updated Variable */
             --win-text: #000000;
             --win-text-sec: #5C5C5C;
             --win-border: rgba(0, 0, 0, 0.1);
@@ -118,6 +119,13 @@
             --win-active: rgba(255, 255, 255, 0.1);
         }
         .win-dark-bg { background-color: #202020 !important; color: #fff !important; }
+
+        /* Turbo Mode Red Text */
+        .turbo-active-header .win-title-left,
+        .turbo-active-header .win-header-info,
+        .turbo-active-header .win-ctrl-btn {
+            color: #FF0000 !important;
+        }
 
         #clippy-win11 {
             position: fixed; 
@@ -145,7 +153,7 @@
         .win-titlebar {
             height: 32px; display: flex; align-items: center; justify-content: space-between;
             padding: 0 10px; background: transparent; user-select: none; cursor: move;
-            font-size: 12px;
+            font-size: 12px; flex-wrap: nowrap; white-space: nowrap;
         }
         .win-title-left { display: flex; align-items: center; gap: 10px; font-weight: 600; }
         .win-header-info { display: flex; gap: 15px; font-size: 11px; color: var(--win-text-sec); margin-right: auto; margin-left: 15px;}
@@ -169,14 +177,14 @@
         /* Body */
         .win-body { padding: 15px; display: flex; flex-direction: column; gap: 10px; min-height: 320px; }
 
-        /* Status Card */
+        /* Status Card - Centered */
         .status-card {
             background: var(--win-hover); border: 1px solid var(--win-border); border-radius: 6px;
-            padding: 12px; display: flex; flex-direction: column; gap: 5px; position: relative; overflow: hidden;
+            padding: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; position: relative; overflow: hidden;
         }
         .status-pill-text {
             font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
-            display: flex; justify-content: space-between;
+            display: flex; justify-content: center; width: 100%;
         }
         .status-progress-bg {
             position: absolute; left: 0; bottom: 0; height: 3px; width: 0%;
@@ -213,7 +221,8 @@
         
         /* Minimized State */
         #clippy-win11.minimized .win-nav, #clippy-win11.minimized .win-body { display: none; }
-        #clippy-win11.minimized { width: 300px; height: auto; }
+        #clippy-win11.minimized { width: auto; min-width: 500px; height: auto; }
+        #clippy-win11.minimized .win-titlebar { width: 100%; }
         
         /* Hidden State */
         #clippy-win11.hidden { display: none; }
@@ -250,7 +259,7 @@
             <div class="win-controls">
                 <button class="win-ctrl-btn" id="btn-ghost" title="Ghost Mode (G)">—</button>
                 <button class="win-ctrl-btn" id="btn-minimize" title="Minimize">▢</button>
-                <button class="win-ctrl-btn close" id="btn-close" title="Hide (Space x2 to show)">×</button>
+                <button class="win-ctrl-btn close" id="btn-close" title="Refresh Website">×</button>
             </div>
         </div>
 
@@ -312,7 +321,7 @@
                         <span>Cyber Awareness</span>
                         <div class="cert-icons">
                             <span title="Run a Code" onclick="window.runCyberLogic()">🦾</span>
-                            <span title="26 Hours">2️⃣6️⃣</span>
+                            <span title="Year 26">2️⃣6️⃣</span>
                             <a href="https://learn.atis.army.mil/moodle/course/index.php?search=Cyber+Awareness+Challenge" target="_blank" title="Link">🔗</a>
                         </div>
                     </div>
@@ -382,6 +391,11 @@
                 <div class="settings-row">
                     <span>Accent Color:</span>
                     <input type="color" id="s-color" value="${state.config.accent}" style="width:40px; padding:0;">
+                </div>
+
+                <div class="settings-row">
+                    <span>Widget Color:</span>
+                    <input type="color" id="s-widget-bg" value="#F3F3F3" style="width:40px; padding:0;">
                 </div>
                 
                 <div class="settings-row">
@@ -524,7 +538,7 @@
         widget.style.boxShadow = 'var(--win-shadow)';
     };
 
-    // JKO Logic (From provided code)
+    // JKO Logic
     const runJKO = () => {
         state.mode = 'jko'; state.isRunning = true; state.cycle = 0; state.failCount = 0;
         setStatus("INIT", 0);
@@ -532,7 +546,6 @@
         cycleJKO();
     };
     
-    // Expose to window for emoji clicks
     window.runJKOLogic = runJKO;
 
     const cycleJKO = () => {
@@ -606,7 +619,7 @@
     };
     window.runOpsecLogic = runOpsec;
 
-    // Auto Start Logic (From provided code)
+    // Auto Start Logic
     setTimeout(() => {
         let isJKO = false;
         try {
@@ -633,7 +646,6 @@
             } catch(e) {}
         }
 
-        // Auto Test after 3s if JKO
         setTimeout(() => {
             if(isJKO) {
                 setStatus("AUTO TEST", 20);
@@ -660,10 +672,7 @@
     widget.querySelector('#btn-stop').addEventListener('click', stopAll);
     
     // Window Controls
-    widget.querySelector('#btn-close').addEventListener('click', () => {
-        widget.classList.add('hidden');
-        state.isHidden = true;
-    });
+    widget.querySelector('#btn-close').addEventListener('click', () => location.reload()); // Refresh Website
     widget.querySelector('#btn-minimize').addEventListener('click', () => {
         state.isMinimized = !state.isMinimized;
         widget.classList.toggle('minimized', state.isMinimized);
@@ -678,7 +687,13 @@
     widget.querySelector('#s-sec').onchange = (e) => { state.config.jkoSec = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoSec; saveSettings(); };
     widget.querySelector('#s-delay').onchange = (e) => { state.config.jkoDelay = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoDelay; saveSettings(); };
     widget.querySelector('#s-cyc').onchange = (e) => { state.config.jkoCycles = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoCycles; saveSettings(); };
-    widget.querySelector('#s-turbo').onchange = (e) => { state.isTurbo = e.target.checked; saveSettings(); };
+    
+    // Turbo Toggle & Red Text Logic
+    widget.querySelector('#s-turbo').onchange = (e) => { 
+        state.isTurbo = e.target.checked; 
+        widget.classList.toggle('turbo-active-header', state.isTurbo);
+        saveSettings(); 
+    };
     
     widget.querySelector('#s-ghost').oninput = (e) => {
         state.config.ghostOpacity = e.target.value;
@@ -719,6 +734,19 @@
         saveSettings();
     };
 
+    // Widget Background Color
+    widget.querySelector('#s-widget-bg').oninput = (e) => {
+        state.config.widgetBg = e.target.value;
+        // Convert hex to rgba for the CSS variable if needed, or just set it
+        // Since input type color returns hex, and CSS var expects rgba usually for backdrop, 
+        // we will just set the hex and let the browser handle it (modern browsers support hex with alpha or just hex).
+        // To ensure compatibility with the existing 'rgba' logic, we'll just override the variable.
+        // Note: Backdrop-filter blur works best with semi-transparency. 
+        // If user picks solid color, it will look solid.
+        document.documentElement.style.setProperty('--win-bg', e.target.value);
+        saveSettings();
+    };
+
     widget.querySelector('#btn-reset-def').addEventListener('click', () => {
         localStorage.removeItem('clippy_win11_config');
         location.reload();
@@ -726,18 +754,6 @@
 
     // Keyboard Shortcuts
     document.addEventListener('keydown', (e) => {
-        // Double Space to show hidden widget
-        if (e.code === 'Space') {
-            const now = Date.now();
-            if (state.isHidden && now - state.lastSpacePress < 400) {
-                widget.classList.remove('hidden');
-                state.isHidden = false;
-                state.lastSpacePress = 0;
-            } else {
-                state.lastSpacePress = now;
-            }
-        }
-        
         if(document.activeElement.tagName === 'INPUT') return;
         const k = e.key.toUpperCase();
         if(k === 'J') { stopAll(); runJKO(); }
@@ -756,17 +772,16 @@
         if(k === 'L') {
             currentLocationIndex = (currentLocationIndex + 1) % LOCATIONS.length;
             const loc = LOCATIONS[currentLocationIndex];
-            // Reset positioning
             widget.style.top = ''; widget.style.bottom = '';
             widget.style.left = ''; widget.style.right = '';
             widget.style.transform = '';
-            
             Object.assign(widget.style, loc);
         }
         if(k === 'G') { state.isGhost = !state.isGhost; widget.classList.toggle('ghost-mode', state.isGhost); }
         if(k === 'T') { 
             state.isTurbo = !state.isTurbo; 
             widget.querySelector('#s-turbo').checked = state.isTurbo;
+            widget.classList.toggle('turbo-active-header', state.isTurbo);
             setStatus(state.isTurbo ? "TURBO" : "NORMAL", 50); 
         }
         if(k === 'V') { 
