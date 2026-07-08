@@ -1,0 +1,793 @@
+(function() {
+    'use strict';
+
+    // --- CONFIGURATION & STATE ---
+    const DEFAULT_CONFIG = {
+        jkoSec: 3,
+        jkoDelay: 2,
+        jkoCycles: 20,
+        accent: '#00E676',
+        widgetBg: 'rgba(243, 243, 243, 0.85)',
+        scale: 1,
+        ghostOpacity: 0.15,
+        weatherUnit: 'F',
+        weatherType: 'feels',
+        darkModeUI: true,
+        darkModeBG: true,
+        saveEnabled: true,
+        muted: false,
+        showLocation: false
+    };
+
+    let state = {
+        isRunning: false,
+        isPaused: false,
+        mode: 'home',
+        cycle: 0,
+        failCount: 0,
+        uptimeStart: Date.now(),
+        isGhost: false,
+        isTurbo: false,
+        timer: null,
+        nextCycle: null,
+        audioCtx: null,
+        config: { ...DEFAULT_CONFIG },
+        isMinimized: false,
+        isHidden: false,
+        lastSpacePress: 0
+    };
+
+    // --- LOAD SAVED SETTINGS ---
+    if (state.config.saveEnabled && localStorage.getItem('clippy_win11_config')) {
+        try {
+            const saved = JSON.parse(localStorage.getItem('clippy_win11_config'));
+            state.config = { ...DEFAULT_CONFIG, ...saved };
+        } catch (e) {}
+    }
+
+    // --- SCORM API INITIALIZATION ---
+    var API_1484_11 = null;
+    
+    function initAPI2004() {
+        try {
+            API_1484_11 = window.frames["JKOAPI"].document.API_1484_11;
+            
+            if (!API_1484_11) {
+                setTimeout(initAPI2004, 200);
+            }
+        } catch (e) {
+            setTimeout(initAPI2004, 200);
+        }
+    }
+
+    var jkoApiFrame = document.getElementById("JKOAPI");
+    if (jkoApiFrame) {
+        jkoApiFrame.onload = initAPI2004;
+    } else {
+        setTimeout(initAPI2004, 1000);
+    }
+
+    // --- AUDIO ENGINE ---
+    const playSound = (type) => {
+        if (state.config.muted) return;
+        try {
+            if (!state.audioCtx) state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = state.audioCtx.createOscillator();
+            const gain = state.audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(state.audioCtx.destination);
+
+            if (type === 'chime') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, state.audioCtx.currentTime); 
+                osc.frequency.setValueAtTime(392.00, state.audioCtx.currentTime + 0.1); 
+                gain.gain.setValueAtTime(0.5, state.audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, state.audioCtx.currentTime + 1.5);
+                osc.start(); osc.stop(state.audioCtx.currentTime + 1.5);
+            } else if (type === 'click') {
+                osc.type = 'square';
+                osc.frequency.value = 600;
+                gain.gain.setValueAtTime(0.1, state.audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, state.audioCtx.currentTime + 0.1);
+                osc.start(); osc.stop(state.audioCtx.currentTime + 0.1);
+            }
+        } catch(e) {}
+    };
+
+    // --- HELPERS ---
+    let blinker = null;
+    const startBlink = () => { if(!blinker) blinker = setInterval(() => document.title = document.title.includes("✅") ? "Clippy Win11" : "Completed ✅", 800); };
+    const stopBlink = () => { clearInterval(blinker); blinker = null; document.title = "Clippy Win11"; };
+    
+    const saveSettings = () => {
+        if (state.config.saveEnabled) {
+            localStorage.setItem('clippy_win11_config', JSON.stringify(state.config));
+        } else {
+            localStorage.removeItem('clippy_win11_config');
+        }
+    };
+
+    // --- LOCATIONS ---
+    const LOCATIONS = [
+        { bottom: '20px', left: '50%', transform: 'translateX(-50%) scale(var(--widget-scale))', top: 'auto', right: 'auto' },
+        { top: '20px', left: '20px', transform: 'none', bottom: 'auto', right: 'auto' },
+        { top: '20px', right: '20px', left: 'auto', transform: 'none', bottom: 'auto' },
+        { bottom: '20px', right: '20px', top: 'auto', left: 'auto', transform: 'none' },
+        { bottom: '20px', left: '20px', transform: 'none', top: 'auto', right: 'auto' }
+    ];
+    let currentLocationIndex = 0;
+
+    // --- STYLES: WINDOWS 11 THEME ---
+    const css = `
+        :root {
+            --win-accent: ${state.config.accent};
+            --win-bg: ${state.config.widgetBg};
+            --win-text: #000000;
+            --win-text-sec: #5C5C5C;
+            --win-border: rgba(0, 0, 0, 0.1);
+            --win-hover: rgba(0, 0, 0, 0.05);
+            --win-active: rgba(0, 0, 0, 0.1);
+            --win-radius: 8px;
+            --win-shadow: 0 2px 22px rgba(0, 0, 0, 0.15);
+            --widget-scale: ${state.config.scale};
+            --ghost-opacity: ${state.config.ghostOpacity};
+        }
+        .win-dark-ui {
+            --win-bg: rgba(32, 32, 32, 0.9);
+            --win-text: #FFFFFF;
+            --win-text-sec: #ABABAB;
+            --win-border: rgba(255, 255, 255, 0.1);
+            --win-hover: rgba(255, 255, 255, 0.05);
+            --win-active: rgba(255, 255, 255, 0.1);
+        }
+        .win-dark-bg { background-color: #202020 !important; color: #fff !important; }
+
+        .turbo-active-header .win-title-left,
+        .turbo-active-header .win-header-info,
+        .turbo-active-header .win-ctrl-btn {
+            color: #FF0000 !important;
+        }
+
+        #clippy-win11 {
+            position: fixed; width: 450px;
+            background: var(--win-bg);
+            backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--win-border);
+            border-radius: 8px;
+            box-shadow: var(--win-shadow);
+            font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+            color: var(--win-text);
+            z-index: 2147483647;
+            overflow: hidden;
+            transition: opacity 0.2s, box-shadow 0.3s, width 0.2s, height 0.2s;
+            top: auto; bottom: 20px; left: 50%; right: auto;
+            transform: translateX(-50%) scale(var(--widget-scale));
+        }
+
+        #clippy-win11.ghost-mode { opacity: var(--ghost-opacity); }
+        #clippy-win11.ghost-mode:hover { opacity: 1; }
+
+        .win-titlebar {
+            height: 32px; display: flex; align-items: center; justify-content: space-between;
+            padding: 0 10px; background: transparent; user-select: none; cursor: move;
+            font-size: 12px; flex-wrap: nowrap; white-space: nowrap;
+        }
+        .win-title-left { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+        .win-header-info { display: flex; gap: 15px; font-size: 11px; color: var(--win-text-sec); margin-right: auto; margin-left: 15px;}
+        .win-controls { display: flex; height: 100%; }
+        .win-ctrl-btn {
+            width: 46px; height: 100%; border: none; background: transparent;
+            color: var(--win-text); font-size: 10px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .win-ctrl-btn:hover { background: var(--win-hover); }
+        .win-ctrl-btn.close:hover { background: #C42B1C; color: white; }
+
+        .win-nav { display: flex; padding: 0 10px; gap: 4px; border-bottom: 1px solid var(--win-border); }
+        .win-nav-btn {
+            padding: 8px 16px; border: none; background: transparent; color: var(--win-text-sec);
+            font-size: 12px; cursor: pointer; border-radius: 4px 4px 0 0;
+        }
+        .win-nav-btn.active { color: var(--win-accent); font-weight: 600; border-bottom: 2px solid var(--win-accent); background: var(--win-hover); }
+
+        .win-body { padding: 15px; display: flex; flex-direction: column; gap: 10px; min-height: 320px; }
+
+        .status-card {
+            background: var(--win-hover); border: 1px solid var(--win-border); border-radius: 6px;
+            padding: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; position: relative; overflow: hidden;
+        }
+        .status-pill-text {
+            font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+            display: flex; justify-content: center; width: 100%;
+        }
+        .status-progress-bg {
+            position: absolute; left: 0; bottom: 0; height: 3px; width: 0%;
+            background: var(--win-accent); transition: width 0.2s;
+        }
+
+        .win-btn {
+            padding: 5px 10px; border: 1px solid var(--win-border); background: var(--win-hover);
+            color: var(--win-text); border-radius: 4px; font-size: 12px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+        }
+        .win-btn:hover { background: var(--win-active); }
+        .win-btn-accent { background: var(--win-accent); color: #000; border: none; font-weight: 600; }
+        .win-btn-accent:hover { filter: brightness(1.1); }
+
+        .cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .cert-item {
+            display: flex; justify-content: space-between; align-items: center; font-size: 11px;
+            padding: 4px 8px; background: var(--win-hover); border-radius: 4px;
+        }
+        .cert-icons span, .cert-icons a { cursor: pointer; margin-left: 4px; text-decoration: none; }
+        
+        .due-bar {
+            margin-top: 5px; padding: 8px; background: var(--win-hover); border-radius: 4px;
+            display: flex; justify-content: space-between; font-size: 11px; font-weight: 600;
+        }
+
+        .settings-row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; font-size: 12px; }
+        .settings-input { width: 40px; padding: 4px; border: 1px solid var(--win-border); border-radius: 4px; background: transparent; color: var(--win-text); text-align: center; }
+        .settings-inline { display: flex; gap: 10px; align-items: center; }
+        
+        #clippy-win11.minimized .win-nav, #clippy-win11.minimized .win-body { display: none; }
+        #clippy-win11.minimized { width: auto; min-width: 500px; height: auto; }
+        #clippy-win11.minimized .win-titlebar { width: 100%; }
+        
+        #clippy-win11.hidden { display: none; }
+
+        .page { display: none; }
+        .page.active { display: block; }
+    `;
+
+    const styleTag = document.createElement('style');
+    styleTag.innerHTML = css;
+    document.head.appendChild(styleTag);
+
+    // --- HTML STRUCTURE ---
+    const widget = document.createElement('div');
+    widget.id = 'clippy-win11';
+    
+    const dueDate = new Date();
+    dueDate.setMonth(dueDate.getMonth() + 9);
+    const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const dueStr = `${String(dueDate.getDate()).padStart(2,'0')}${months[dueDate.getMonth()]}${String(dueDate.getFullYear()).toString().slice(-2)}`;
+    const todayStr = `${String(new Date().getDate()).padStart(2,'0')}${months[new Date().getMonth()]}${String(new Date().getFullYear()).toString().slice(-2)}`;
+
+    widget.innerHTML = `
+        <div class="win-titlebar" id="drag-handle">
+            <div class="win-title-left"><span>📎</span> Clippy.B</div>
+            <div class="win-header-info">
+                <span id="header-timer">00:00:00</span>
+                <span id="header-weather">☀️ 72°F</span>
+                <span id="header-status" style="display:none; font-weight:bold; color:var(--win-accent);">READY</span>
+            </div>
+            <div class="win-controls">
+                <button class="win-ctrl-btn" id="btn-ghost" title="Ghost Mode (G)">—</button>
+                <button class="win-ctrl-btn" id="btn-minimize" title="Minimize">▢</button>
+                <button class="win-ctrl-btn close" id="btn-close" title="Refresh Website">×</button>
+            </div>
+        </div>
+
+        <div class="win-nav">
+            <button class="win-nav-btn active" data-page="home">Home</button>
+            <button class="win-nav-btn" data-page="settings">Settings</button>
+            <button class="win-nav-btn" data-page="legend">Legend</button>
+        </div>
+
+        <div class="win-body">
+            <div class="page active" id="page-home">
+                <div class="status-card">
+                    <div class="status-pill-text">
+                        <span id="text-status">READY</span>
+                    </div>
+                    <div class="status-progress-bg" id="progress-bar"></div>
+                </div>
+
+                <div style="display:flex; gap:5px; margin-bottom:10px;">
+                    <button class="win-btn" id="btn-run-j" style="flex:1;">Run JKO (J)</button>
+                    <button class="win-btn" id="btn-run-c" style="flex:1;">Run Cyber (C)</button>
+                    <button class="win-btn" id="btn-run-o" style="flex:1;">Run OPSEC (O)</button>
+                    <button class="win-btn win-btn-accent" id="btn-test-j" style="flex:1;">Test JKO</button>
+                </div>
+                
+                <div style="display:flex; gap:5px; margin-bottom:10px;">
+                    <button class="win-btn" id="btn-start" style="flex:1; background: #2ecc71; color:white;">Start</button>
+                    <button class="win-btn" id="btn-stop" style="flex:1; background: #e74c3c; color:white;">Stop</button>
+                </div>
+
+                <div style="margin-top:5px; font-size:11px; font-weight:600; color:var(--win-text-sec);">Certificates</div>
+                <div class="cert-grid">
+                    <div class="cert-item">
+                        <span>Level I Antiterrorism</span>
+                        <div class="cert-icons">
+                            <span title="Run a Code" onclick="window.runJKOLogic()">🦾</span>
+                            <a href="https://jkodirect.jten.mil" target="_blank" title="Link">🔗</a>
+                            <a href="https://www.isitdownrightnow.com/jkodirect.jten.mil.html" target="_blank" title="Is it Down">♻️</a>
+                        </div>
+                    </div>
+                    <div class="cert-item">
+                        <span>DashBoard</span>
+                        <div class="cert-icons">
+                            <a href="https://atis.okta.mil/app/UserHome" target="_blank" title="Link">🔗</a>
+                            <a href="https://www.isitdownrightnow.com/atis.okta.mil.html" target="_blank" title="Is it Down">♻️</a>
+                        </div>
+                    </div>
+
+                    <div class="cert-item">
+                        <span>Cyber Awareness</span>
+                        <div class="cert-icons">
+                            <span title="Run a Code" onclick="window.runCyberLogic()">🦾</span>
+                            <span title="Year 26">2️⃣6️⃣</span>
+                            <a href="https://learn.atis.army.mil/moodle/course/index.php?search=Cyber+Awareness+Challenge" target="_blank" title="Link">🔗</a>
+                        </div>
+                    </div>
+                    <div class="cert-item">
+                        <span>InfoSec</span>
+                        <div class="cert-icons">
+                            <span title="Wait 10mins">🕑</span>
+                            <a href="https://learn.atis.army.mil/moodle/course/index.php?search=Information+Security" target="_blank" title="Link">🔗</a>
+                        </div>
+                    </div>
+
+                    <div class="cert-item">
+                        <span>OPSEC</span>
+                        <div class="cert-icons">
+                            <span title="Run a Code" onclick="window.runOpsecLogic()">🦾</span>
+                            <a href="https://learn.atis.army.mil/moodle/course/index.php?search=OPSEC" target="_blank" title="Link">🔗</a>
+                        </div>
+                    </div>
+                    <div class="cert-item">
+                        <span>Tarp</span>
+                        <div class="cert-icons">
+                            <span title="Wait 10mins">🕑</span>
+                            <a href="https://learn.atis.army.mil/moodle/course/index.php?search=TARP" target="_blank" title="Link">🔗</a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="due-bar">
+                    <span title="If cert is done today">Did: ${todayStr}</span>
+                    <span title="Then you'll go Ember on">Due: ${dueStr}</span>
+                </div>
+            </div>
+
+            <div class="page" id="page-settings">
+                <div class="settings-row">
+                    <span>JKO Config:</span>
+                    <div class="settings-inline">
+                        <span>Sec:</span><input type="number" id="s-sec" class="settings-input" min="1" value="${state.config.jkoSec}">
+                        <span>Dly:</span><input type="number" id="s-delay" class="settings-input" min="1" value="${state.config.jkoDelay}">
+                        <span>Cyc:</span><input type="number" id="s-cyc" class="settings-input" min="1" value="${state.config.jkoCycles}">
+                        <label style="display:flex; align-items:center; gap:2px; cursor:pointer;" title="Turbo Mode"><span>AI:</span><input type="checkbox" id="s-turbo" ${state.isTurbo ? 'checked' : ''}></label>
+                    </div>
+                </div>
+
+                <div class="settings-row">
+                    <span>Weather:</span>
+                    <div class="settings-inline">
+                        <label style="display:flex; align-items:center; gap:2px; cursor:pointer;"><input type="radio" name="w-type" value="actual" ${state.config.weatherType === 'actual' ? 'checked' : ''}> Actual</label>
+                        <label style="display:flex; align-items:center; gap:2px; cursor:pointer;"><input type="radio" name="w-type" value="feels" ${state.config.weatherType === 'feels' ? 'checked' : ''}> Feels</label>
+                        <select id="s-unit" style="padding:2px; border-radius:4px; background:transparent; border:1px solid var(--win-border); color:var(--win-text);">
+                            <option value="F" ${state.config.weatherUnit === 'F' ? 'selected' : ''}>°F</option>
+                            <option value="C" ${state.config.weatherUnit === 'C' ? 'selected' : ''}>°C</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="settings-row">
+                    <span>Location in Header:</span>
+                    <input type="checkbox" id="s-loc-toggle" ${state.config.showLocation ? 'checked' : ''}>
+                </div>
+
+                <div class="settings-row">
+                    <span>Accent Color:</span>
+                    <input type="color" id="s-color" value="${state.config.accent}" style="width:40px; padding:0;">
+                </div>
+
+                <div class="settings-row">
+                    <span>Widget Color:</span>
+                    <input type="color" id="s-widget-bg" value="#F3F3F3" style="width:40px; padding:0;">
+                </div>
+                
+                <div class="settings-row">
+                    <span>Appearance:</span>
+                    <div class="settings-inline">
+                        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="checkbox" id="s-dark-ui" ${state.config.darkModeUI ? 'checked' : ''}> Dark UI</label>
+                        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="checkbox" id="s-dark-bg" ${state.config.darkModeBG ? 'checked' : ''}> Dark Site</label>
+                    </div>
+                </div>
+
+                <div class="settings-row">
+                    <span>Ghost Opacity:</span>
+                    <input type="range" id="s-ghost" min="0.05" max="0.5" step="0.05" value="${state.config.ghostOpacity}" style="width:100px;">
+                </div>
+
+                <div class="settings-row">
+                    <span>Mute Sound:</span>
+                    <input type="checkbox" id="s-mute" ${state.config.muted ? 'checked' : ''}>
+                </div>
+                
+                <div class="settings-row">
+                    <span>Save Settings:</span>
+                    <input type="checkbox" id="s-save" ${state.config.saveEnabled ? 'checked' : ''}>
+                </div>
+                
+                <div style="display:flex; gap:5px; margin-top:10px;">
+                     <button class="win-btn" id="btn-reset-def" style="flex:1;">Reset Defaults</button>
+                </div>
+            </div>
+
+            <div class="page" id="page-legend">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 11px; color: var(--win-text-sec);">
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Run JKO</span><span style="font-weight:600; color:var(--win-accent);">[J]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Run Cyber</span><span style="font-weight:600; color:var(--win-accent);">[C]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Run OPSEC</span><span style="font-weight:600; color:var(--win-accent);">[O]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Pause/Start</span><span style="font-weight:600; color:var(--win-accent);">[P]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Refresh Cycles</span><span style="font-weight:600; color:var(--win-accent);">[R]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Test Jump</span><span style="font-weight:600; color:var(--win-accent);">[K]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Settings</span><span style="font-weight:600; color:var(--win-accent);">[S]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Move Widget</span><span style="font-weight:600; color:var(--win-accent);">[L]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Ghost Mode</span><span style="font-weight:600; color:var(--win-accent);">[G]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Turbo Mode</span><span style="font-weight:600; color:var(--win-accent);">[T]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Toggle Save</span><span style="font-weight:600; color:var(--win-accent);">[V]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Home/Reset</span><span style="font-weight:600; color:var(--win-accent);">[H]</span></div>
+                    <div class="legend-item" style="display:flex; justify-content:space-between;"><span>Dark Mode</span><span style="font-weight:600; color:var(--win-accent);">[D]</span></div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(widget);
+
+    // --- LOGIC ---
+
+    if (state.config.darkModeUI) widget.classList.add('win-dark-ui');
+    if (state.config.darkModeBG) document.body.classList.add('win-dark-bg');
+
+    const pages = widget.querySelectorAll('.page');
+    const navBtns = widget.querySelectorAll('.win-nav-btn');
+    navBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            navBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            pages.forEach(p => p.classList.remove('active'));
+            widget.querySelector(`#page-${btn.dataset.page}`).classList.add('active');
+            playSound('click');
+        });
+    });
+
+    const els = {
+        status: widget.querySelector('#text-status'),
+        progress: widget.querySelector('#progress-bar'),
+        timer: widget.querySelector('#header-timer'),
+        weather: widget.querySelector('#header-weather'),
+        headerStatus: widget.querySelector('#header-status')
+    };
+
+    setInterval(() => {
+        const d = Date.now() - state.uptimeStart;
+        const h = String(Math.floor(d/3600000)).padStart(2,'0');
+        const m = String(Math.floor((d%3600000)/60000)).padStart(2,'0');
+        const s = String(Math.floor((d%60000)/1000)).padStart(2,'0');
+        els.timer.innerText = `${h}:${m}:${s}`;
+    }, 1000);
+
+    const updateWeather = async () => {
+        try {
+            const r = await fetch('https://wttr.in/?format=j1');
+            const j = await r.json();
+            const c = j.current_condition[0];
+            const area = j.nearest_area[0];
+            const unit = widget.querySelector('#s-unit').value;
+            const type = widget.querySelector('input[name="w-type"]:checked').value;
+            
+            let temp = unit === 'F' ? c.temp_F : c.temp_C;
+            if (type === 'feels') temp = unit === 'F' ? c.FeelsLikeF : c.FeelsLikeC;
+            
+            const desc = c.weatherDesc[0].value.toLowerCase();
+            let icon = '☀️';
+            if(desc.includes('rain')) icon = '🌧️';
+            else if(desc.includes('cloud')) icon = '☁️';
+            else if(desc.includes('clear') && (new Date().getHours()>20 || new Date().getHours()<6)) icon = '🌙';
+            
+            let locText = "";
+            if (state.config.showLocation) {
+                locText = `${area.areaName[0].value} `;
+            }
+            
+            els.weather.innerText = `${locText}${icon} ${temp}°${unit}`;
+        } catch(e) { els.weather.innerText = '☀️ --'; }
+    };
+    updateWeather(); setInterval(updateWeather, 600000);
+
+    const setStatus = (txt, pct) => {
+        els.status.innerText = txt;
+        els.headerStatus.innerText = txt;
+        els.progress.style.width = pct + '%';
+    };
+
+    const complete = (txt) => {
+        setStatus(txt, 100);
+        playSound('chime');
+        startBlink();
+        widget.style.boxShadow = `0 0 25px 5px ${state.config.accent}`;
+        state.isRunning = false;
+    };
+
+    const stopAll = () => {
+        clearTimeout(state.timer); clearTimeout(state.nextCycle);
+        state.isRunning = false; state.isPaused = false;
+        setStatus("STOPPED", 0);
+        widget.style.boxShadow = 'var(--win-shadow)';
+    };
+
+    const runJKO = () => {
+        state.mode = 'jko'; state.isRunning = true; state.cycle = 0; state.failCount = 0;
+        setStatus("INIT", 0);
+        playSound('click');
+        cycleJKO();
+    };
+    
+    window.runJKOLogic = runJKO;
+
+    const cycleJKO = () => {
+        if(!state.isRunning || state.isPaused) return;
+        const max = parseInt(widget.querySelector('#s-cyc').value);
+        if(state.cycle >= max) { complete("J DONE"); return; }
+
+        setStatus("RUN", (state.cycle/max)*100);
+        const t = state.isTurbo ? 800 : (parseInt(widget.querySelector('#s-sec').value)*1000);
+        const d = state.isTurbo ? 800 : (parseInt(widget.querySelector('#s-delay').value)*1000);
+
+        try {
+            const h = document.getElementsByName("courseheader");
+            if(h && h.length > 0) {
+                const doc = h[0].contentDocument || h[0].contentWindow.document;
+                const b = doc.getElementById('four');
+                if(b) {
+                    try { API_1484_11.SetValue('cmi.completion_status', 'completed'); API_1484_11.Commit(""); } catch(e){}
+                    if(b.href.includes('javascript:')) h[0].contentWindow.location.href = b.href; else b.click();
+                    state.cycle++;
+                    setStatus(`CYC ${state.cycle}`, (state.cycle/max)*100);
+                } else { state.failCount++; }
+            }
+        } catch(e) { state.failCount++; }
+
+        if(state.failCount > 3) { setStatus("ERROR", 0); stopAll(); return; }
+
+        state.timer = setTimeout(() => {
+            state.nextCycle = setTimeout(cycleJKO, d);
+        }, t);
+    };
+
+    const runCyber = () => {
+        state.mode = 'cyber';
+        setStatus("SEARCH", 20);
+        let api = null, w = window;
+        while(w && !api) {
+            if(w.API_1484_11) api = w.API_1484_11;
+            else if(w.parent && w.parent !== w) w = w.parent;
+            else if(w.opener) w = w.opener;
+            else w = null;
+        }
+        if(api) {
+            setStatus("FOUND", 50);
+            try {
+                api.Initialize(""); 
+                api.SetValue("cmi.completion_status", "completed");
+                api.SetValue("cmi.success_status", "passed");
+                api.Commit(""); 
+                api.Terminate("");
+                complete("LEAVE");
+            } catch(e) { setStatus("ERROR", 0); }
+        } else { setStatus("API FAIL", 0); }
+    };
+    window.runCyberLogic = runCyber;
+
+    const runOpsec = () => {
+        state.mode = 'opsec';
+        setStatus("OPSEC", 50);
+        try {
+            if(window.opener && window.opener.scorm) {
+                window.opener.scorm.set("cmi.score.raw", 100);
+                window.opener.scorm.set("cmi.completion_status", "completed");
+                window.opener.scorm.set("cmi.success_status", "passed");
+                window.opener.scorm.commit();
+                complete("LEAVE");
+            } else { setStatus("NO OPEN", 0); }
+        } catch(e) { setStatus("ERROR", 0); }
+    };
+    window.runOpsecLogic = runOpsec;
+
+    // Auto Start Logic
+    setTimeout(() => {
+        let isJKO = false;
+        try {
+            const h = document.getElementsByName("courseheader");
+            if (h && h.length > 0) {
+                isJKO = true;
+                const d = h[0].contentDocument || h[0].contentWindow.document;
+                const startBtn = d.getElementById('one');
+                const resumeBtn = d.getElementById('two');
+                if (startBtn) { startBtn.click(); setStatus("AUTO START", 10); } 
+                else if (resumeBtn) { resumeBtn.click(); setStatus("RESUMED", 10); }
+            }
+        } catch(e){}
+
+        if (!isJKO) {
+            try {
+                if (window.opener && window.opener.scorm) {
+                    window.opener.scorm.set("cmi.score.raw", 100);
+                    window.opener.scorm.set("cmi.completion_status", "completed");
+                    window.opener.scorm.set("cmi.success_status", "passed");
+                    window.opener.scorm.commit();
+                    setStatus("SCORM SET", 100);
+                }
+            } catch(e) {}
+        }
+
+        setTimeout(() => {
+            if(isJKO) {
+                setStatus("AUTO TEST", 20);
+                try { API_1484_11.SetValue('cmi.completion_status','completed'); setStatus("TEST OK", 100); playSound('chime'); } 
+                catch(e) { setStatus("NO API", 0); }
+            }
+        }, 3000);
+    }, 1000);
+
+    // --- EVENT LISTENERS ---
+    
+    widget.querySelector('#btn-run-j').addEventListener('click', () => { stopAll(); runJKO(); });
+    widget.querySelector('#btn-run-c').addEventListener('click', () => { stopAll(); runCyber(); });
+    widget.querySelector('#btn-run-o').addEventListener('click', () => { stopAll(); runOpsec(); });
+    widget.querySelector('#btn-test-j').addEventListener('click', () => {
+        try { API_1484_11.SetValue('cmi.completion_status','completed'); setStatus("TEST OK", 100); playSound('chime'); } 
+        catch(e) { setStatus("NO API", 0); }
+    });
+    widget.querySelector('#btn-start').addEventListener('click', () => {
+        if (state.isPaused) { state.isPaused = false; cycleJKO(); }
+        else if (!state.isRunning) runJKO();
+    });
+    widget.querySelector('#btn-stop').addEventListener('click', stopAll);
+    
+    widget.querySelector('#btn-close').addEventListener('click', () => location.reload());
+    widget.querySelector('#btn-minimize').addEventListener('click', () => {
+        state.isMinimized = !state.isMinimized;
+        widget.classList.toggle('minimized', state.isMinimized);
+        els.headerStatus.style.display = state.isMinimized ? 'block' : 'none';
+    });
+    widget.querySelector('#btn-ghost').addEventListener('click', () => {
+        state.isGhost = !state.isGhost; 
+        widget.classList.toggle('ghost-mode', state.isGhost);
+    });
+
+    widget.querySelector('#s-sec').onchange = (e) => { state.config.jkoSec = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoSec; saveSettings(); };
+    widget.querySelector('#s-delay').onchange = (e) => { state.config.jkoDelay = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoDelay; saveSettings(); };
+    widget.querySelector('#s-cyc').onchange = (e) => { state.config.jkoCycles = Math.max(1, parseInt(e.target.value)); e.target.value = state.config.jkoCycles; saveSettings(); };
+    
+    widget.querySelector('#s-turbo').onchange = (e) => { 
+        state.isTurbo = e.target.checked; 
+        widget.classList.toggle('turbo-active-header', state.isTurbo);
+        saveSettings(); 
+    };
+    
+    widget.querySelector('#s-ghost').oninput = (e) => {
+        state.config.ghostOpacity = e.target.value;
+        document.documentElement.style.setProperty('--ghost-opacity', e.target.value);
+        saveSettings();
+    };
+
+    widget.querySelector('#s-dark-ui').onchange = (e) => {
+        state.config.darkModeUI = e.target.checked;
+        widget.classList.toggle('win-dark-ui', e.target.checked);
+        saveSettings();
+    };
+    widget.querySelector('#s-dark-bg').onchange = (e) => {
+        state.config.darkModeBG = e.target.checked;
+        document.body.classList.toggle('win-dark-bg', e.target.checked);
+        saveSettings();
+    };
+    
+    widget.querySelector('#s-save').onchange = (e) => {
+        state.config.saveEnabled = e.target.checked;
+        saveSettings();
+    };
+    
+    widget.querySelector('#s-mute').onchange = (e) => {
+        state.config.muted = e.target.checked;
+        saveSettings();
+    };
+    
+    widget.querySelector('#s-loc-toggle').onchange = (e) => {
+        state.config.showLocation = e.target.checked;
+        updateWeather();
+        saveSettings();
+    };
+    
+    widget.querySelector('#s-color').oninput = (e) => {
+        state.config.accent = e.target.value;
+        document.documentElement.style.setProperty('--win-accent', e.target.value);
+        saveSettings();
+    };
+
+    widget.querySelector('#s-widget-bg').oninput = (e) => {
+        state.config.widgetBg = e.target.value;
+        document.documentElement.style.setProperty('--win-bg', e.target.value);
+        saveSettings();
+    };
+
+    widget.querySelector('#btn-reset-def').addEventListener('click', () => {
+        localStorage.removeItem('clippy_win11_config');
+        location.reload();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if(document.activeElement.tagName === 'INPUT') return;
+        const k = e.key.toUpperCase();
+        if(k === 'J') { stopAll(); runJKO(); }
+        if(k === 'C') { stopAll(); runCyber(); }
+        if(k === 'O') { stopAll(); runOpsec(); }
+        if(k === 'P') {
+            if(state.mode === 'jko') {
+                state.isPaused = !state.isPaused;
+                setStatus(state.isPaused ? "PAUSED" : "RUNNING", 50);
+                if(!state.isPaused) cycleJKO();
+            }
+        }
+        if(k === 'R') { state.cycle = 0; setStatus("RESET", 0); }
+        if(k === 'K') { try { API_1484_11.SetValue('cmi.completion_status','completed'); setStatus("CHECKED", 100); } catch(e){} }
+        if(k === 'S') { widget.querySelector('.win-nav-btn[data-page="settings"]').click(); }
+        if(k === 'L') {
+            currentLocationIndex = (currentLocationIndex + 1) % LOCATIONS.length;
+            const loc = LOCATIONS[currentLocationIndex];
+            widget.style.top = ''; widget.style.bottom = '';
+            widget.style.left = ''; widget.style.right = '';
+            widget.style.transform = '';
+            Object.assign(widget.style, loc);
+        }
+        if(k === 'G') { state.isGhost = !state.isGhost; widget.classList.toggle('ghost-mode', state.isGhost); }
+        if(k === 'T') { 
+            state.isTurbo = !state.isTurbo; 
+            widget.querySelector('#s-turbo').checked = state.isTurbo;
+            widget.classList.toggle('turbo-active-header', state.isTurbo);
+            setStatus(state.isTurbo ? "TURBO" : "NORMAL", 50); 
+        }
+        if(k === 'V') { 
+            let checkbox = widget.querySelector('#s-save');
+            checkbox.checked = !checkbox.checked;
+            checkbox.dispatchEvent(new Event('change'));
+        }
+        if(k === 'D') { 
+            let uiCheck = widget.querySelector('#s-dark-ui');
+            uiCheck.checked = !uiCheck.checked;
+            uiCheck.dispatchEvent(new Event('change'));
+        }
+        if(k === 'H') { stopAll(); state.cycle=0; setStatus("HOME", 0); widget.style.boxShadow='var(--win-shadow)'; stopBlink(); }
+    });
+
+    let isDragging = false; let offset = {x:0, y:0};
+    const handle = widget.querySelector('#drag-handle');
+    
+    handle.addEventListener('mousedown', (e) => {
+        if(e.target.closest('button')) return;
+        isDragging = true;
+        offset.x = e.clientX;
+        offset.y = e.clientY;
+        const rect = widget.getBoundingClientRect();
+        widget.style.left = rect.left + 'px';
+        widget.style.top = rect.top + 'px';
+        widget.style.right = 'auto';
+        widget.style.bottom = 'auto';
+        widget.style.transform = 'scale(var(--widget-scale))';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if(!isDragging) return;
+        widget.style.left = (widget.offsetLeft + (e.clientX - offset.x)) + 'px';
+        widget.style.top = (widget.offsetTop + (e.clientY - offset.y)) + 'px';
+        offset.x = e.clientX; offset.y = e.clientY;
+    });
+
+    document.addEventListener('mouseup', () => isDragging = false);
+
+})();
